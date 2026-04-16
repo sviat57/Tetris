@@ -88,11 +88,17 @@ def clear_rows(grid, locked):
                     locked[(j, i + inc)] = color
     return inc
 
-def draw_bubble_block(surface, x, y, color, is_ghost=False):
+def draw_bubble_block(surface, x, y, color, is_ghost=False, is_flash=False):
     bx = x * BLOCK_SIZE
     by = y * BLOCK_SIZE
     rect = (bx, by, BLOCK_SIZE, BLOCK_SIZE)
     
+    # Режим белой вспышки (для анимации)
+    if is_flash:
+        pygame.draw.rect(surface, (255, 255, 255), rect, border_radius=8)
+        pygame.draw.rect(surface, (200, 255, 255), rect, 2, border_radius=8)
+        return
+
     if is_ghost:
         ghost_surf = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE), pygame.SRCALPHA)
         pygame.draw.rect(ghost_surf, (*color, 80), (0, 0, BLOCK_SIZE, BLOCK_SIZE), 2, border_radius=8)
@@ -111,27 +117,32 @@ def draw_bubble_block(surface, x, y, color, is_ghost=False):
     
     pygame.draw.rect(surface, (255, 255, 255), rect, 1, border_radius=8)
 
-def draw_ui(surface, score, next_piece):
+def draw_ui(surface, score, level, next_piece):
     font_main = pygame.font.SysFont('arial', 30, bold=True)
     font_score = pygame.font.SysFont('arial', 40, bold=True)
 
     label_score_text = font_main.render('SCORE', 1, (150, 160, 180))
     label_score_val = font_score.render(str(score), 1, (0, 230, 254))
-    surface.blit(label_score_text, (GAME_WIDTH + 30, 80))
-    surface.blit(label_score_val, (GAME_WIDTH + 30, 120))
+    surface.blit(label_score_text, (GAME_WIDTH + 30, 50))
+    surface.blit(label_score_val, (GAME_WIDTH + 30, 90))
+
+    label_lvl_text = font_main.render('LEVEL', 1, (150, 160, 180))
+    label_lvl_val = font_score.render(str(level), 1, (106, 219, 45))
+    surface.blit(label_lvl_text, (GAME_WIDTH + 30, 160))
+    surface.blit(label_lvl_val, (GAME_WIDTH + 30, 200))
 
     label_next = font_main.render('NEXT', 1, (150, 160, 180))
-    surface.blit(label_next, (GAME_WIDTH + 30, 250))
+    surface.blit(label_next, (GAME_WIDTH + 30, 300))
     
     shape_format = next_piece.image()
     sx = GAME_WIDTH + 30
-    sy = 300
+    sy = 350
     for i in range(4):
         for j in range(4):
             if (i * 4 + j) in shape_format:
                 draw_bubble_block(surface, (sx // BLOCK_SIZE) + j, (sy // BLOCK_SIZE) + i, next_piece.color)
 
-def draw_window(surface, grid, score, next_piece):
+def draw_window(surface, grid, score, level, next_piece):
     surface.fill(BG_COLOR)
     pygame.draw.rect(surface, GRID_BG_COLOR, (0, 0, GAME_WIDTH, SCREEN_HEIGHT))
     
@@ -146,7 +157,7 @@ def draw_window(surface, grid, score, next_piece):
                 draw_bubble_block(surface, x, y, grid[y][x])
     
     pygame.draw.rect(surface, (100, 110, 130), (0, 0, GAME_WIDTH, SCREEN_HEIGHT), 2)
-    draw_ui(surface, score, next_piece)
+    draw_ui(surface, score, level, next_piece)
 
 def main():
     locked_vertices = {}
@@ -159,13 +170,14 @@ def main():
     
     clock = pygame.time.Clock()
     fall_time = 0
-    fall_speed = 0.35
     score = 0
+    level = 1
+    fall_speed = 0.35
 
     while run:
         grid = create_grid(locked_vertices)
         fall_time += clock.get_rawtime()
-        clock.tick(60) # СТАБИЛИЗАЦИЯ КАДРОВ
+        clock.tick(60)
 
         if fall_time / 1000 >= fall_speed:
             fall_time = 0
@@ -197,7 +209,6 @@ def main():
                     current_piece.y -= 1
                     change_piece = True
 
-        # Логика тени
         ghost_piece = Piece(current_piece.x, current_piece.y)
         ghost_piece.shape = current_piece.shape
         ghost_piece.rotation = current_piece.rotation
@@ -207,7 +218,6 @@ def main():
             ghost_piece.y += 1
         ghost_piece.y -= 1 
 
-        # === ГЛАВНОЕ ИСПРАВЛЕНИЕ: Мгновенное удаление линий ===
         if change_piece:
             shape_format = current_piece.image()
             for i in range(4):
@@ -215,22 +225,42 @@ def main():
                     if (i * 4 + j) in shape_format:
                         locked_vertices[(current_piece.x + j, current_piece.y + i)] = current_piece.color
             
-            # Обновляем сетку ДО проверки на удаление
             grid = create_grid(locked_vertices)
             
+            # === АНИМАЦИЯ УДАЛЕНИЯ ЛИНИИ ===
+            # 1. Сначала находим линии, которые полностью заполнены
+            full_rows = []
+            for i in range(ROWS):
+                if (0, 0, 0) not in grid[i]:
+                    full_rows.append(i)
+
+            # 2. Если есть заполненные линии, рисуем анимацию вспышки
+            if full_rows:
+                draw_window(screen, grid, score, level, next_piece) # Отрисовываем актуальное поле
+                
+                # Рисуем белые блоки поверх полных линий
+                for row in full_rows:
+                    for col in range(COLUMNS):
+                        draw_bubble_block(screen, col, row, (255,255,255), is_flash=True)
+                
+                pygame.display.update() # Обновляем экран со вспышкой
+                pygame.time.delay(120)  # Замираем на 120 миллисекунд (эффект удара/вспышки)
+            # ===============================
+
             lines_cleared = clear_rows(grid, locked_vertices)
+            
             if lines_cleared > 0:
                 scores_by_lines = {1: 100, 2: 300, 3: 500, 4: 800}
                 score += scores_by_lines.get(lines_cleared, 0)
-                # Обновляем сетку еще раз после удаления, чтобы нарисовать уже чистое поле
+                level = (score // 1000) + 1
+                fall_speed = max(0.05, 0.35 - (level - 1) * 0.025)
                 grid = create_grid(locked_vertices)
                 
             current_piece = next_piece
             next_piece = Piece(3, 0)
             change_piece = False
 
-        # Отрисовка теперь происходит в САМОМ КОНЦЕ цикла
-        draw_window(screen, grid, score, next_piece)
+        draw_window(screen, grid, score, level, next_piece)
 
         ghost_format = ghost_piece.image()
         for i in range(4):
@@ -247,12 +277,37 @@ def main():
         pygame.display.update()
 
         if any(y < 1 for (x, y) in locked_vertices):
-            font = pygame.font.SysFont('arial', 50, bold=True)
-            label = font.render("GAME OVER", 1, (255, 60, 60))
-            screen.blit(label, (SCREEN_WIDTH/2 - label.get_width()/2, SCREEN_HEIGHT/2 - label.get_height()/2))
+            dark_surface = pygame.Surface((GAME_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            dark_surface.fill((0, 0, 0, 180))
+            screen.blit(dark_surface, (0, 0))
+
+            font_go = pygame.font.SysFont('arial', 50, bold=True)
+            label_go = font_go.render("GAME OVER", 1, (255, 60, 60))
+            screen.blit(label_go, (GAME_WIDTH/2 - label_go.get_width()/2, SCREEN_HEIGHT/2 - 50))
+            
+            font_restart = pygame.font.SysFont('arial', 24, bold=True)
+            label_restart = font_restart.render("Press SPACE to Restart", 1, (255, 255, 255))
+            screen.blit(label_restart, (GAME_WIDTH/2 - label_restart.get_width()/2, SCREEN_HEIGHT/2 + 20))
+            
             pygame.display.update()
-            pygame.time.delay(3000)
-            run = False
+
+            waiting = True
+            while waiting:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        waiting = False
+                        run = False
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_SPACE:
+                            locked_vertices.clear()
+                            grid = create_grid(locked_vertices)
+                            score = 0
+                            level = 1
+                            fall_speed = 0.35
+                            current_piece = Piece(3, 0)
+                            next_piece = Piece(3, 0)
+                            fall_time = 0
+                            waiting = False 
 
     pygame.quit()
 
