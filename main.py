@@ -15,13 +15,8 @@ SCREEN_HEIGHT = ROWS * BLOCK_SIZE
 
 # Нежная, пастельная палитра
 COLORS = [
-    (142, 220, 229),  # Мягкий голубой (I)
-    (247, 230, 151),  # Кремово-желтый (O)
-    (200, 168, 226),  # Нежный лавандовый (T)
-    (165, 223, 178),  # Мятный зеленый (S)
-    (243, 163, 163),  # Пастельный красный (Z)
-    (155, 184, 237),  # Приглушенный синий (J)
-    (248, 194, 145)   # Персиковый (L)
+    (142, 220, 229), (247, 230, 151), (200, 168, 226),
+    (165, 223, 178), (243, 163, 163), (155, 184, 237), (248, 194, 145)
 ]
 
 BG_COLOR = (248, 249, 250)         
@@ -41,21 +36,21 @@ SHAPES = [
     [[1, 2, 5, 6]], # O
 ]
 
-# --- Функции Рекордов ---
-def get_max_score():
-    if not os.path.exists('highscore.txt'):
-        with open('highscore.txt', 'w') as f:
-            f.write('0')
-    with open('highscore.txt', 'r') as f:
-        try: return int(f.read())
-        except: return 0
+class Particle:
+    def __init__(self, x, y, color):
+        self.x = x
+        self.y = y
+        self.vx = random.uniform(-4, 4)
+        self.vy = random.uniform(-7, -2)
+        self.color = color
+        self.life = 255
+        self.size = random.randint(4, 8)
 
-def update_max_score(score):
-    high = get_max_score()
-    if score > high:
-        with open('highscore.txt', 'w') as f:
-            f.write(str(score))
-# -------------------------
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.35  # Гравитация частицы
+        self.life -= 8   # Скорость исчезновения
 
 class Piece:
     def __init__(self, x, y, exclude_color=None):
@@ -72,44 +67,116 @@ class Piece:
     def image(self):
         return self.shape[self.rotation % len(self.shape)]
 
-def create_grid(locked_pos={}):
-    grid = [[(0,0,0) for _ in range(COLUMNS)] for _ in range(ROWS)]
-    for y in range(ROWS):
-        for x in range(COLUMNS):
-            if (x, y) in locked_pos:
-                grid[y][x] = locked_pos[(x, y)]
-    return grid
+class TetrisGame:
+    def __init__(self):
+        self.locked_vertices = {}
+        self.grid = self.create_grid()
+        self.current_piece = Piece(3, 0)
+        self.next_piece = Piece(3, 0, exclude_color=self.current_piece.color)
+        self.score = 0
+        self.high_score = self.get_max_score()
+        self.level = 1
+        self.fall_speed = 0.35
+        self.lines_cleared_total = 0
+        self.game_over = False
+        self.floating_texts = []
+        self.particles = []
+        self.shake_timer = 0
+        self.hard_dropped = False
 
-def valid_space(piece, grid):
-    accepted_pos = [[(j, i) for j in range(COLUMNS) if grid[i][j] == (0,0,0)] for i in range(ROWS)]
-    accepted_pos = [item for sublist in accepted_pos for item in sublist]
-    formatted = []
-    shape_format = piece.image()
-    for i in range(4):
-        for j in range(4):
-            if (i * 4 + j) in shape_format:
-                formatted.append((piece.x + j, piece.y + i))
-    for pos in formatted:
-        if pos not in accepted_pos:
-            if pos[1] > -1:
-                return False
-    return True
+    def create_grid(self):
+        grid = [[(0,0,0) for _ in range(COLUMNS)] for _ in range(ROWS)]
+        for y in range(ROWS):
+            for x in range(COLUMNS):
+                if (x, y) in self.locked_vertices:
+                    grid[y][x] = self.locked_vertices[(x, y)]
+        return grid
 
-def clear_rows(grid, locked):
-    inc = 0
-    for i in range(len(grid)-1, -1, -1):
-        row = grid[i]
-        if (0, 0, 0) not in row:
-            inc += 1
-            for j in range(len(row)):
-                try: del locked[(j, i)]
-                except: continue
-        elif inc > 0:
-            for j in range(len(row)):
-                if (j, i) in locked:
-                    color = locked.pop((j, i))
-                    locked[(j, i + inc)] = color
-    return inc
+    def get_max_score(self):
+        if not os.path.exists('highscore.txt'):
+            with open('highscore.txt', 'w') as f:
+                f.write('0')
+        with open('highscore.txt', 'r') as f:
+            try:
+                content = f.read().strip()
+                if ']' in content:
+                    return int(content.split(']')[-1].strip())
+                return int(content)
+            except: return 0
+
+    def update_max_score(self):
+        if self.score > self.high_score:
+            with open('highscore.txt', 'w') as f:
+                f.write(str(self.score))
+
+    def valid_space(self, piece):
+        shape_format = piece.image()
+        for i in range(4):
+            for j in range(4):
+                if (i * 4 + j) in shape_format:
+                    x = piece.x + j
+                    y = piece.y + i
+                    if x < 0 or x >= COLUMNS or y >= ROWS:
+                        return False
+                    if (x, y) in self.locked_vertices and y > -1:
+                        return False
+        return True
+
+    def clear_rows(self):
+        inc = 0
+        full_rows = []
+        
+        # Находим полные ряды и генерируем частицы
+        for i in range(ROWS - 1, -1, -1):
+            row = self.grid[i]
+            if (0, 0, 0) not in row:
+                inc += 1
+                full_rows.append(i)
+                for j in range(COLUMNS):
+                    try: 
+                        color = self.locked_vertices[(j, i)]
+                        # Создаем 4 частицы для каждого удаляемого блока
+                        for _ in range(4):
+                            px = j * BLOCK_SIZE + random.randint(5, BLOCK_SIZE - 5)
+                            py = i * BLOCK_SIZE + random.randint(5, BLOCK_SIZE - 5)
+                            self.particles.append(Particle(px, py, color))
+                        
+                        del self.locked_vertices[(j, i)]
+                    except: continue
+            elif inc > 0:
+                for j in range(COLUMNS):
+                    if (j, i) in self.locked_vertices:
+                        color = self.locked_vertices.pop((j, i))
+                        self.locked_vertices[(j, i + inc)] = color
+
+        if inc > 0:
+            self.lines_cleared_total += inc
+            scores_by_lines = {1: 100, 2: 300, 3: 500, 4: 800}
+            points_gained = scores_by_lines.get(inc, 0)
+            self.score += points_gained
+
+            text_str = f"+{points_gained}"
+            if inc == 4:
+                text_str = "TETRIS! " + text_str
+
+            text_y = full_rows[len(full_rows)//2] * BLOCK_SIZE
+            self.floating_texts.append({
+                'x': GAME_WIDTH // 2,
+                'y': text_y,
+                'text': text_str,
+                'alpha': 255
+            })
+
+            if self.score > self.high_score:
+                self.high_score = self.score
+
+            self.level = (self.lines_cleared_total // 10) + 1
+            self.fall_speed = max(0.05, 0.35 - (self.level - 1) * 0.025)
+
+            if self.hard_dropped:
+                self.shake_timer = 10
+
+        return inc, full_rows
 
 def draw_square_block(surface, bx, by, color, is_ghost=False, is_flash=False, is_locked=False):
     rect = (bx, by, BLOCK_SIZE, BLOCK_SIZE)
@@ -215,147 +282,101 @@ def draw_window(surface, grid, score, level, next_piece, high_score):
     draw_ui(surface, score, level, next_piece, high_score)
 
 def main():
-    locked_vertices = {}
-    grid = create_grid(locked_vertices)
-    change_piece = False
-    run = True
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("Minimalist Pastel Tetris")
     
-    current_piece = Piece(3, 0)
-    next_piece = Piece(3, 0, exclude_color=current_piece.color)
-    
-    clock = pygame.time.Clock()
-    fall_time = 0
-    score = 0
-    high_score = get_max_score()
-    level = 1
-    fall_speed = 0.35
-
-    shake_timer = 0
-    floating_texts = [] 
-    
-    # Флаг для отслеживания, была ли фигура брошена Пробелом
-    hard_dropped = False
-
     display_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+    clock = pygame.time.Clock()
+    
+    game = TetrisGame()
+    fall_time = 0
+    run = True
+    change_piece = False
 
     while run:
-        grid = create_grid(locked_vertices)
+        game.grid = game.create_grid()
         fall_time += clock.get_rawtime()
         clock.tick(60)
 
-        if fall_time / 1000 >= fall_speed:
+        if fall_time / 1000 >= game.fall_speed:
             fall_time = 0
-            current_piece.y += 1
-            if not valid_space(current_piece, grid) and current_piece.y > 0:
-                current_piece.y -= 1
+            game.current_piece.y += 1
+            if not game.valid_space(game.current_piece) and game.current_piece.y > 0:
+                game.current_piece.y -= 1
                 change_piece = True
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
             
-            if event.type == pygame.KEYDOWN:
+            if event.type == pygame.KEYDOWN and not game.game_over:
                 if event.key == pygame.K_LEFT:
-                    current_piece.x -= 1
-                    if not valid_space(current_piece, grid): current_piece.x += 1
+                    game.current_piece.x -= 1
+                    if not game.valid_space(game.current_piece): game.current_piece.x += 1
                 if event.key == pygame.K_RIGHT:
-                    current_piece.x += 1
-                    if not valid_space(current_piece, grid): current_piece.x -= 1
+                    game.current_piece.x += 1
+                    if not game.valid_space(game.current_piece): game.current_piece.x -= 1
                 if event.key == pygame.K_DOWN:
-                    current_piece.y += 1
-                    if not valid_space(current_piece, grid): current_piece.y -= 1
+                    game.current_piece.y += 1
+                    if not game.valid_space(game.current_piece): game.current_piece.y -= 1
                 
                 if event.key == pygame.K_UP:
-                    current_piece.rotation += 1
-                    if not valid_space(current_piece, grid):
-                        current_piece.x -= 1 
-                        if not valid_space(current_piece, grid):
-                            current_piece.x += 2 
-                            if not valid_space(current_piece, grid):
-                                current_piece.x -= 1 
-                                current_piece.y -= 1 
-                                if not valid_space(current_piece, grid):
-                                    current_piece.y += 1 
-                                    current_piece.rotation -= 1 
+                    game.current_piece.rotation += 1
+                    if not game.valid_space(game.current_piece):
+                        game.current_piece.x -= 1 
+                        if not game.valid_space(game.current_piece):
+                            game.current_piece.x += 2 
+                            if not game.valid_space(game.current_piece):
+                                game.current_piece.x -= 1 
+                                game.current_piece.y -= 1 
+                                if not game.valid_space(game.current_piece):
+                                    game.current_piece.y += 1 
+                                    game.current_piece.rotation -= 1 
 
                 if event.key == pygame.K_SPACE:
-                    while valid_space(current_piece, grid):
-                        current_piece.y += 1
-                    current_piece.y -= 1
+                    while game.valid_space(game.current_piece):
+                        game.current_piece.y += 1
+                    game.current_piece.y -= 1
                     change_piece = True
-                    # Запоминаем, что игрок использовал жесткий сброс
-                    hard_dropped = True
+                    game.hard_dropped = True
 
-        ghost_piece = Piece(current_piece.x, current_piece.y)
-        ghost_piece.shape = current_piece.shape
-        ghost_piece.rotation = current_piece.rotation
-        ghost_piece.color = current_piece.color
+        ghost_piece = Piece(game.current_piece.x, game.current_piece.y)
+        ghost_piece.shape = game.current_piece.shape
+        ghost_piece.rotation = game.current_piece.rotation
+        ghost_piece.color = game.current_piece.color
         
-        while valid_space(ghost_piece, grid):
+        while game.valid_space(ghost_piece):
             ghost_piece.y += 1
         ghost_piece.y -= 1 
 
         if change_piece:
-            shape_format = current_piece.image()
-            
+            shape_format = game.current_piece.image()
             for i in range(4):
                 for j in range(4):
                     if (i * 4 + j) in shape_format:
-                        locked_vertices[(current_piece.x + j, current_piece.y + i)] = current_piece.color
+                        game.locked_vertices[(game.current_piece.x + j, game.current_piece.y + i)] = game.current_piece.color
             
-            grid = create_grid(locked_vertices)
+            game.grid = game.create_grid()
+            lines_cleared, full_rows = game.clear_rows()
             
-            full_rows = []
-            for i in range(ROWS):
-                if (0, 0, 0) not in grid[i]:
-                    full_rows.append(i)
-
             if full_rows:
-                draw_window(display_surf, grid, score, level, next_piece, high_score)
+                draw_window(display_surf, game.grid, game.score, game.level, game.next_piece, game.high_score)
                 for row in full_rows:
                     for col in range(COLUMNS):
                         draw_square_block(display_surf, col * BLOCK_SIZE, row * BLOCK_SIZE, (255,255,255), is_flash=True)
                 screen.blit(display_surf, (0, 0))
                 pygame.display.update()
                 pygame.time.delay(120)
-
-            lines_cleared = clear_rows(grid, locked_vertices)
-            
-            if lines_cleared > 0:
-                scores_by_lines = {1: 100, 2: 300, 3: 500, 4: 800}
-                points_gained = scores_by_lines.get(lines_cleared, 0)
-                score += points_gained
                 
-                text_str = f"+{points_gained}"
-                if lines_cleared == 4:
-                    text_str = "TETRIS! " + text_str
-                
-                text_y = full_rows[len(full_rows)//2] * BLOCK_SIZE
-                floating_texts.append({
-                    'x': GAME_WIDTH // 2, 
-                    'y': text_y, 
-                    'text': text_str, 
-                    'alpha': 255
-                })
-
-                if score > high_score:
-                    high_score = score
-                
-                level = (score // 1000) + 1
-                fall_speed = max(0.05, 0.35 - (level - 1) * 0.025)
-                grid = create_grid(locked_vertices)
-                
-                # Трясем экран ТОЛЬКО если был Пробел + собрана линия
-                if hard_dropped:
-                    shake_timer = 10
-                
-            current_piece = next_piece
-            next_piece = Piece(3, 0, exclude_color=current_piece.color)
+            game.current_piece = game.next_piece
+            game.next_piece = Piece(3, 0, exclude_color=game.current_piece.color)
             change_piece = False
-            # Сбрасываем флажок для следующей фигуры
-            hard_dropped = False
+            game.hard_dropped = False
 
-        draw_window(display_surf, grid, score, level, next_piece, high_score)
+            if any(y < 1 for (x, y) in game.locked_vertices):
+                game.game_over = True
+
+        draw_window(display_surf, game.grid, game.score, game.level, game.next_piece, game.high_score)
 
         ghost_format = ghost_piece.image()
         for i in range(4):
@@ -363,38 +384,59 @@ def main():
                 if (i * 4 + j) in ghost_format and ghost_piece.y + i > -1:
                     draw_square_block(display_surf, (ghost_piece.x + j) * BLOCK_SIZE, (ghost_piece.y + i) * BLOCK_SIZE, ghost_piece.color, is_ghost=True)
 
-        shape_format = current_piece.image()
+        # Вычисляем плавное падение для текущей фигуры
+        smooth_y_offset = 0
+        test_piece = Piece(game.current_piece.x, game.current_piece.y)
+        test_piece.shape = game.current_piece.shape
+        test_piece.rotation = game.current_piece.rotation
+        test_piece.y += 1
+        # Если блок внизу пустой — делаем смещение
+        if game.valid_space(test_piece) and not game.game_over:
+            smooth_y_offset = (fall_time / (game.fall_speed * 1000)) * BLOCK_SIZE
+
+        shape_format = game.current_piece.image()
         for i in range(4):
             for j in range(4):
-                if (i * 4 + j) in shape_format and current_piece.y + i > -1:
-                    draw_square_block(display_surf, (current_piece.x + j) * BLOCK_SIZE, (current_piece.y + i) * BLOCK_SIZE, current_piece.color)
+                if (i * 4 + j) in shape_format and game.current_piece.y + i > -1:
+                    draw_square_block(display_surf, 
+                                      (game.current_piece.x + j) * BLOCK_SIZE, 
+                                      (game.current_piece.y + i) * BLOCK_SIZE + smooth_y_offset, 
+                                      game.current_piece.color)
 
+        # Отрисовка частиц
+        for p in game.particles[:]:
+            p.update()
+            if p.life <= 0:
+                game.particles.remove(p)
+            else:
+                p_surf = pygame.Surface((p.size, p.size), pygame.SRCALPHA)
+                p_surf.fill((*p.color, max(0, int(p.life))))
+                display_surf.blit(p_surf, (p.x, p.y))
+
+        # Отрисовка текста очков
         font_float = pygame.font.SysFont('arial', 28, bold=True)
-        for ft in floating_texts[:]:
+        for ft in game.floating_texts[:]:
             ft['y'] -= 1.5      
             ft['alpha'] -= 4    
             
             if ft['alpha'] <= 0:
-                floating_texts.remove(ft)
+                game.floating_texts.remove(ft)
             else:
                 text_surface = font_float.render(ft['text'], True, (130, 195, 150))
                 text_surface.set_alpha(ft['alpha'])
                 display_surf.blit(text_surface, (ft['x'] - text_surface.get_width()//2, ft['y']))
 
-        # Уменьшенная амплитуда тряски (от -2 до 2 пикселей)
         dx, dy = 0, 0
-        if shake_timer > 0:
+        if game.shake_timer > 0:
             dx = random.randint(-2, 2)
             dy = random.randint(-2, 2)
-            shake_timer -= 1
+            game.shake_timer -= 1
 
         screen.fill(BG_COLOR)
         screen.blit(display_surf, (dx, dy))
 
-        pygame.display.update()
-
-        if any(y < 1 for (x, y) in locked_vertices):
-            update_max_score(score) 
+        if game.game_over:
+            game.update_max_score()
             
             light_surface = pygame.Surface((GAME_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             light_surface.fill((255, 255, 255, 210)) 
@@ -418,20 +460,15 @@ def main():
                         run = False
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_SPACE:
-                            locked_vertices.clear()
-                            grid = create_grid(locked_vertices)
-                            score = 0
-                            level = 1
-                            fall_speed = 0.35
-                            floating_texts.clear()
-                            current_piece = Piece(3, 0)
-                            next_piece = Piece(3, 0, exclude_color=current_piece.color)
+                            game = TetrisGame()
                             fall_time = 0
-                            hard_dropped = False
+                            change_piece = False
                             waiting = False 
+
+        if not game.game_over:
+            pygame.display.update()
 
     pygame.quit()
 
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Minimalist Pastel Tetris")
-main()
+if __name__ == "__main__":
+    main()
